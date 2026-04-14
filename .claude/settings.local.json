@@ -18,7 +18,10 @@
       "Bash(.venv/bin/python3 -c \"import pkg_resources; print\\('pkg_resources ok'\\)\")",
       "Bash(.venv/bin/python3 -c \"from crew import build_crew; print\\('crew import ok'\\)\")",
       "Bash(.venv/bin/python3 -c ':*)",
-      "Bash(.venv/bin/python3 -c \"from openai import OpenAI; print\\('openai ok'\\)\")"
+      "Bash(.venv/bin/python3 -c \"from openai import OpenAI; print\\('openai ok'\\)\")",
+      "WebFetch(domain:developers.notion.com)",
+      "Read(//Volumes/Workplaces&Data/Claude\\\\ Code\\\\ Workplace/AutoAIBlog/**)",
+      "Bash(python -c ':*)"
     ]
   }
 }

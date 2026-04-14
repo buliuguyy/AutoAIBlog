@@ -5,9 +5,17 @@ AutoAIBlog 执行器
   直接调用搜索工具（无 LLM 多轮循环），将所有原始数据汇总后，
   通过 OpenAI SDK（兼容 nuwaflux 代理）单次调用 Claude 生成完整日报。
   此方案绕过了 CrewAI ReAct 框架的 assistant-prefill 问题。
+
+改进（v2）：
+  - 对学术论文增加精读步骤：提取 top 5 论文，通过 Tavily 补充搜索获取
+    更丰富的方法介绍、实验结果等网络资料，供 writer 撰写深度分析
+  - Writer 输出采用 Notion 扩展 Markdown 方言，支持 callout / toggle /
+    代码块 / 公式等富文本块，详见 docs/notion_formatting_guide.md
 """
 import os
+import re
 from datetime import datetime
+from pathlib import Path
 
 
 # ─────────────────────────────────────────────
@@ -28,7 +36,8 @@ class AutoAIBlogRunner:
     替代 CrewAI Crew 的轻量执行器。
     kickoff() 对外接口保持不变，内部改为：
       1. 用 Python 直接调用搜索工具（Tavily + arXiv）
-      2. 汇总原始数据，单次调用 Claude 生成 Markdown 日报
+      2. 对 top 论文补充精读（Tavily 补充搜索）
+      3. 汇总原始数据，单次调用 Claude 生成 Notion 富文本 Markdown 日报
     """
 
     def kickoff(self) -> _Result:
@@ -65,6 +74,10 @@ class AutoAIBlogRunner:
             academic_parts.append(arxiv_tool._run(q, days_back=d))
         academic_raw = "\n\n---\n\n".join(academic_parts)
 
+        # ── 2.5 学术论文精读（补充深度内容）────────────────
+        print("  → 精读重要学术论文...")
+        paper_details_raw = self._read_top_papers(tavily, academic_raw)
+
         # ── 3. HCI 前沿 ─────────────────────────────────────
         print("  → 搜集 HCI 前沿工作...")
         hci_parts = [
@@ -87,30 +100,90 @@ class AutoAIBlogRunner:
 
         # ── 5. 单次 LLM 调用生成日报 ────────────────────────
         print("  → 调用 Claude 生成日报...")
-        report = self._write_report(today, news_raw, academic_raw, hci_raw, tools_raw)
+        report = self._write_report(
+            today, news_raw, academic_raw, paper_details_raw, hci_raw, tools_raw
+        )
         return _Result(report)
+
+    # ─────────────────────────────────────────────────────────
+    # 论文精读：提取 top 论文并通过 Tavily 补充方法/结果信息
+    # ─────────────────────────────────────────────────────────
+
+    def _read_top_papers(self, tavily, academic_raw: str) -> str:
+        """
+        从 arXiv 搜索结果中提取 top 5 论文标题，
+        对每篇用 Tavily 补充搜索：获取方法介绍、图示说明、实验结论等网络资料。
+        返回拼接后的精读原始文本，供 writer 生成深度分析。
+        """
+        # 从 academic_raw 提取论文标题（arXiv 工具以 **Title** 开头）
+        title_matches = re.findall(r"\*\*(.+?)\*\*", academic_raw)
+        seen: set[str] = set()
+        top_titles: list[str] = []
+        for t in title_matches:
+            # 过滤掉"作者"等字段标签（通常很短或含冒号）
+            if len(t) > 20 and "：" not in t and ":" not in t:
+                if t not in seen:
+                    seen.add(t)
+                    top_titles.append(t)
+            if len(top_titles) >= 5:
+                break
+
+        if not top_titles:
+            return "（未提取到可精读的论文）"
+
+        detail_parts = []
+        for title in top_titles:
+            # 搜索该论文的详细介绍（博文、项目页、Papers with Code 等）
+            query = f'"{title[:70]}" paper method architecture experiment result'
+            result = tavily._run(query)
+            detail_parts.append(
+                f"=== 论文精读：{title} ===\n{result}"
+            )
+
+        return "\n\n".join(detail_parts)
+
+    # ─────────────────────────────────────────────────────────
+    # Writer：单次 LLM 调用，输出 Notion 富文本 Markdown
+    # ─────────────────────────────────────────────────────────
 
     def _write_report(
         self,
         today: str,
         news_raw: str,
         academic_raw: str,
+        paper_details_raw: str,
         hci_raw: str,
         tools_raw: str,
     ) -> str:
         from openai import OpenAI
 
-        prompt = f"""你是 AI 日报撰写编辑，请将以下原始搜索数据整理为一份结构清晰的 Markdown 日报。
+        # 读取 Notion 格式指南（供 prompt 参考）
+        guide_path = Path(__file__).parent / "docs" / "notion_formatting_guide.md"
+        notion_guide = guide_path.read_text(encoding="utf-8") if guide_path.exists() else ""
+
+        prompt = f"""你是 AI 日报撰写编辑。请将以下原始搜索数据整理为一份结构清晰的 Notion 富文本 Markdown 日报。
 
 **日期**：{today}
+
+---
+
+## Notion 格式规范（必须严格遵守）
+
+{notion_guide}
+
+---
 
 ================
 【① AI 企业资讯 原始数据】
 {news_raw}
 
 ================
-【② AIGC 学术前沿 原始数据】
+【② AIGC 学术前沿 原始数据（arXiv 摘要）】
 {academic_raw}
+
+================
+【② 学术论文精读补充（方法/结果/图示/博客等网络资料）】
+{paper_details_raw}
 
 ================
 【③ 人机交互前沿 原始数据】
@@ -121,7 +194,8 @@ class AutoAIBlogRunner:
 {tools_raw}
 
 ================
-请严格按照以下 Markdown 格式输出（不要用 ``` 包裹输出内容）：
+
+请严格按照以下结构输出（不要用 ``` 包裹整体输出内容）：
 
 # AI 日报 — {today}
 
@@ -131,57 +205,86 @@ class AutoAIBlogRunner:
 
 ## ① AI 企业资讯
 
+（5-8 条，每条使用以下格式）
+
 ### [新闻标题](来源链接)
 ![](图片URL)
-核心内容摘要（2-3 句中文）
+> [!INFO] 核心要点：一句话概括最重要的信息（≤40字）
 
-（重复以上格式，5-8 条，仅在原始数据有「图片URL」字段时才加 ![]() 行）
+新闻摘要（2-3句中文，说明事件详情与行业意义）
 
 ---
 
 ## ② AIGC 学术前沿
 
-（按子方向分组：图像生成 / 视频生成与编辑 / 3D 生成 / LLM 等）
+（按子方向分组：图像生成 / 视频生成与编辑 / 3D生成 / 大语言模型 / 图像编辑等）
+（每方向 2-4 篇，总计 8-15 篇，优先选取有精读补充数据的论文）
 
-### 图像生成
+### [子方向名称]
 
 #### [论文标题](arXiv链接)
-**作者**：xxx et al.
-**核心贡献**：中文解读（2-3 句）
-**论文预览**：[HuggingFace Papers](预览URL)
 
-（仅在原始数据有「论文预览（含主图）」字段时才加「论文预览」行）
+> [!KEY] 核心贡献：一句话概括本文最大创新点（突出与现有工作的差异）
+
+**作者**：xxx et al. | **发布**：YYYY-MM-DD
+
+**研究动机**：当前方法存在什么问题，本文为何要解决这个问题（1-2句）
+
+<toggle>🔧 方法详解
+**核心框架**：方法/模型名称
+
+- **组件/步骤 1**：描述
+- **组件/步骤 2**：描述
+- **关键创新**：技术亮点说明
+</toggle>
+
+<toggle>📊 实验与结果
+- **评估基准**：XXX benchmark / XXX dataset
+- **关键指标**：XXX，相比 [对比方法] 提升 XX%
+- **重要发现**：核心结论（1-2条）
+</toggle>
+
+**论文预览**：[HuggingFace Papers](HF URL)
+
+（重复以上格式，仅当原始数据有「论文预览（含主图）」时才加「论文预览」行）
 
 ---
 
 ## ③ 人机交互前沿
 
+（4-8 条，每条使用以下格式）
+
 ### [工作标题](链接)
-**来源**：CHI 2025 / UIST / arXiv 等
-**内容**：中文介绍（2-3 句）
+> [!GOAL] 研究问题：本工作聚焦解决的核心问题（≤40字）
+
+**来源**：CHI 2025 / UIST 2025 / arXiv 等
+**内容**：简洁中文介绍，包括方法特色与实际应用价值（2-3句）
 
 ---
 
 ## ④ AI 工具推荐
 
-### [工具名称](链接)
-![](图片URL)
-**功能**：简介
-**适用**：场景
-**费用**：免费 / 付费 / 开源
+（4-6 个工具，每条使用以下格式）
 
-（仅在有「图片URL」时才加 ![]() 行，4-6 个工具）
+### [工具名称](官网/GitHub链接)
+> [!TIP] 核心功能：一句话描述工具核心价值（≤40字）
+
+**功能**：详细介绍工具能做什么
+**适用**：目标用户与使用场景
+**费用**：免费 / 付费（价格）/ 开源（协议）
 
 ---
 
 *由 AutoAIBlog 自动生成 | {today}*
 
-附加规则：
-- 所有解读/摘要必须是中文
-- 只使用原始数据中出现的真实链接，不要虚构 URL
-- 图片：原始数据含「图片URL」字段才嵌入，无则不加占位符
-- 论文预览：原始数据含「论文预览（含主图）」才加，无则省略
-- 整体风格专业简洁，适合 AI 从业者快速浏览
+附加规则（严格遵守）：
+1. 所有解读/摘要/分析必须使用中文；技术术语可保留英文
+2. 只使用原始数据中出现的真实链接，不虚构任何 URL
+3. 图片：原始数据含「图片URL」字段才嵌入 ![]()，无则不加占位符
+4. 论文预览：原始数据含「论文预览（含主图）」才附上链接，无则省略
+5. Toggle 内容必须有实质信息，充分利用精读补充数据填写方法和结果细节
+6. Callout 文字控制在 50 字以内，突出最关键信息
+7. 输出纯 Markdown，不含多余解释说明
 """
 
         base_url = os.getenv("ANTHROPIC_API_BASE_URL", "https://api.openai.com/v1")

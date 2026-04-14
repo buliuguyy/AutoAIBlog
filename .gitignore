@@ -1,0 +1,32 @@
+# 环境变量（含 API 密钥，禁止上传）
+.env
+.env.local
+.env.*.local
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# 输出文件（生成的文章等）
+output/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS
+.DS_Store

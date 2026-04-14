@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls:*)",
+      "Bash(find \"/Volumes/Workplaces&Data/Claude Code Workplace/AutoAIBlog\" -type f -o -type d)",
+      "Bash(uv --version)",
+      "Bash(uv venv:*)",
+      "Bash(uv pip:*)",
+      "Bash(uv run:*)",
+      "Bash(.venv/bin/python -c \"import tavily; print\\(tavily.__version__\\)\")",
+      "Bash(.venv/bin/python -c \"from tavily import TavilyClient; print\\('ok'\\)\")",
+      "Bash(.venv/bin/python -c \"from tavily import TavilyClient; print\\('TavilyClient import ok'\\)\")",
+      "Bash(.venv/bin/pip install:*)",
+      "Bash(.venv/bin/python -m pip install setuptools)",
+      "Bash(.venv/bin/uv pip:*)",
+      "Bash(.venv/bin/python -c \"import pkg_resources; print\\('ok'\\)\")",
+      "Bash(.venv/bin/python -c \"import sys; print\\(sys.executable, sys.path\\)\")",
+      "Bash(.venv/bin/python3 -c \"import pkg_resources; print\\('pkg_resources ok'\\)\")",
+      "Bash(.venv/bin/python3 -c \"from crew import build_crew; print\\('crew import ok'\\)\")",
+      "Bash(.venv/bin/python3 -c ':*)",
+      "Bash(.venv/bin/python3 -c \"from openai import OpenAI; print\\('openai ok'\\)\")"
+    ]
+  }
+}

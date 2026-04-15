@@ -152,9 +152,13 @@ def _parse_inline(text: str) -> list:
 # Block 构造辅助
 # ─────────────────────────────────────────────
 
-def _heading(level: int, text: str) -> dict:
+def _heading(level: int, text: str, is_toggleable: bool = False, children: list | None = None) -> dict:
     kind = f"heading_{min(level, 3)}"
-    return {"type": kind, kind: {"rich_text": _parse_inline(text)}}
+    content: dict = {"rich_text": _parse_inline(text)}
+    if is_toggleable:
+        content["is_toggleable"] = True
+        content["children"] = children if children else [_paragraph(" ")]
+    return {"type": kind, kind: content}
 
 
 def _paragraph(text: str) -> dict:
@@ -169,11 +173,14 @@ def _divider() -> dict:
     return {"type": "divider", "divider": {}}
 
 
-def _image(url: str) -> dict | None:
-    """仅接受 http(s) URL，否则返回 None 跳过。"""
+def _image(url: str, caption: str = "") -> dict | None:
+    """仅接受 http(s) URL，否则返回 None 跳过。alt 文字作为 Notion 图片 caption。"""
     if not url or not url.startswith("http"):
         return None
-    return {"type": "image", "image": {"type": "external", "external": {"url": url}}}
+    img: dict = {"type": "image", "image": {"type": "external", "external": {"url": url}}}
+    if caption.strip():
+        img["image"]["caption"] = _parse_inline(caption)
+    return img
 
 
 def _bullet(text: str) -> dict:
@@ -292,18 +299,45 @@ def markdown_to_notion_blocks(markdown: str) -> list:
             continue
 
         # ── Toggle 折叠块 <toggle>标题 ────────────────────────────
+        # 支持普通 toggle 和带标题级别的 toggle：
+        #   <toggle>标题         → 普通 toggle block
+        #   <toggle>## 标题      → heading_2 with is_toggleable=True
+        #   <toggle>### 标题     → heading_3 with is_toggleable=True
         if s.startswith("<toggle>"):
             title = s[8:].strip()
+            # 检测标题级别
+            heading_level = 0
+            heading_title = title
+            if title.startswith("### "):
+                heading_level = 3
+                heading_title = title[4:]
+            elif title.startswith("## "):
+                heading_level = 2
+                heading_title = title[3:]
+            elif title.startswith("# "):
+                heading_level = 1
+                heading_title = title[2:]
+
             i += 1
             child_lines = []
-            while i < len(lines) and lines[i].strip() != "</toggle>":
+            depth = 1
+            while i < len(lines):
+                curr = lines[i].strip()
+                if curr.startswith("<toggle>"):
+                    depth += 1
+                elif curr == "</toggle>":
+                    depth -= 1
+                    if depth == 0:
+                        i += 1
+                        break
                 child_lines.append(lines[i])
                 i += 1
             # 递归转换子块
             child_blocks = markdown_to_notion_blocks("\n".join(child_lines))
-            blocks.append(_toggle(title, child_blocks))
-            if i < len(lines):
-                i += 1
+            if heading_level > 0:
+                blocks.append(_heading(heading_level, heading_title, is_toggleable=True, children=child_blocks))
+            else:
+                blocks.append(_toggle(title, child_blocks))
             continue
 
         # ── Callout 块 > [!TYPE] 文字 ─────────────────────────────
@@ -346,7 +380,7 @@ def markdown_to_notion_blocks(markdown: str) -> list:
         else:
             img_match = re.fullmatch(r"!\[([^\]]*)\]\(([^)]+)\)", s)
             if img_match:
-                b = _image(img_match.group(2))
+                b = _image(img_match.group(2), img_match.group(1))  # alt → caption
                 if b:
                     blocks.append(b)
             else:

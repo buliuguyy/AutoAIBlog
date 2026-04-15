@@ -30,7 +30,10 @@ class ArxivSearchTool(BaseTool):
             # 构建时间过滤（最近 N 天）
             cutoff_date = datetime.utcnow() - timedelta(days=days_back)
 
-            client = arxiv.Client()
+            client = arxiv.Client(
+                delay_seconds=3.0,
+                num_retries=3,
+            )
             search = arxiv.Search(
                 query=query,
                 max_results=max_results * 2,  # 多取一些以便日期过滤

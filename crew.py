@@ -199,6 +199,25 @@ class AutoAIBlogRunner:
         )
         return resp.choices[0].message.content
 
+    def _repair_toggles(self, text: str) -> str:
+        """修复 LLM 因 token 截断遗漏的 </toggle> 标签。
+
+        使用栈模拟解析：逐行追踪 toggle 深度，精确计算末尾缺失的闭合数量，
+        避免多余 </toggle> 干扰统计（多余的 close 不会让深度低于 0）。
+        """
+        depth = 0
+        for line in text.split("\n"):
+            s = line.strip()
+            if s.startswith("<toggle>"):
+                depth += 1
+            elif s == "</toggle>":
+                if depth > 0:
+                    depth -= 1
+        if depth > 0:
+            text = text.rstrip()
+            text += "\n" + "</toggle>\n" * depth
+        return text
+
     # ─────────────────────────────────────────────────────────
     # 节撰写：① AI 企业资讯
     # ─────────────────────────────────────────────────────────
@@ -231,8 +250,7 @@ class AutoAIBlogRunner:
 【原始搜索数据】
 {news_raw}
 """
-        return self._llm_call(prompt, max_tokens=3000)
-
+        return self._repair_toggles(self._llm_call(prompt, max_tokens=8192))
     # ─────────────────────────────────────────────────────────
     # 节撰写：② AIGC 学术前沿
     # ─────────────────────────────────────────────────────────
@@ -299,6 +317,7 @@ AIGC 领域最重要的论文，进行深度解读。不得多于 3 篇，不得
 - 从第一个 <toggle> 直接开始，不输出「## ② AIGC 学术前沿」等节标题，也不输出子方向分组标题
 - 所有解读用中文，技术术语保留英文，只使用真实链接
 - 每篇论文独立一个外层 <toggle>，各 </toggle> 单独成行
+- **【Toggle 闭合铁律】每一个 <toggle> 必须有对应的 </toggle>，包括最后一篇论文的外层 </toggle>。如果你接近输出长度上限，务必在截断前先补全所有未闭合的 </toggle>，宁可缩减正文内容，也不能遗漏 </toggle>**
 
 【日期】{today}
 
@@ -308,8 +327,7 @@ AIGC 领域最重要的论文，进行深度解读。不得多于 3 篇，不得
 【论文精读补充数据（含图片URL、技术博客、项目主页介绍等）】
 {paper_details_raw}
 """
-        return self._llm_call(prompt, max_tokens=4096)
-
+        return self._repair_toggles(self._llm_call(prompt, max_tokens=8192))
     # ─────────────────────────────────────────────────────────
     # 节撰写：③ HCI 前沿
     # ─────────────────────────────────────────────────────────
@@ -375,14 +393,14 @@ AIGC 领域最重要的论文，进行深度解读。不得多于 3 篇，不得
 - 从第一个 <toggle> 直接开始，不输出「## ③ 人机交互前沿」等节标题
 - 所有介绍用中文，只使用真实链接
 - 每篇工作独立一个外层 <toggle>，各 </toggle> 单独成行
+- **【Toggle 闭合铁律】每一个 <toggle> 必须有对应的 </toggle>，包括最后一篇的外层 </toggle>。如果你接近输出长度上限，务必在截断前先补全所有未闭合的 </toggle>，宁可缩减正文内容，也不能遗漏 </toggle>**
 
 【日期】{today}
 
 【原始数据（arXiv cs.HC + 顶会搜索结果）】
 {hci_raw}
 """
-        return self._llm_call(prompt, max_tokens=4096)
-
+        return self._repair_toggles(self._llm_call(prompt, max_tokens=8192))
     # ─────────────────────────────────────────────────────────
     # 节撰写：④ AI 工具推荐
     # ─────────────────────────────────────────────────────────
@@ -421,7 +439,7 @@ AIGC 领域最重要的论文，进行深度解读。不得多于 3 篇，不得
 【原始数据】
 {tools_raw}
 """
-        return self._llm_call(prompt, max_tokens=2000)
+        return self._repair_toggles(self._llm_call(prompt, max_tokens=3000))
 
     # ─────────────────────────────────────────────────────────
     # 拼装完整报告（纯字符串拼接，无 LLM 调用）

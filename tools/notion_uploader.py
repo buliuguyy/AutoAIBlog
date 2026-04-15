@@ -72,6 +72,7 @@ def _parse_inline(text: str) -> list:
     """将行内 Markdown 转换为 Notion rich_text 数组。
 
     支持：**bold**、*italic*、`code`、==highlight==、[link](url)
+    单个 rich_text 内容不超过 2000 字符（Notion API 限制）。
     """
     if not text.strip():
         return [{"type": "text", "text": {"content": " "}}]
@@ -137,7 +138,8 @@ def _parse_inline(text: str) -> list:
         # 普通文字（直到下一个特殊字符）
         m = re.match(r"[^*`=\[]+", text[pos:])
         if m:
-            rich_texts.append({"type": "text", "text": {"content": m.group(0)}})
+            content = m.group(0)[:2000]
+            rich_texts.append({"type": "text", "text": {"content": content}})
             pos += m.end()
             continue
 
@@ -145,7 +147,7 @@ def _parse_inline(text: str) -> list:
         rich_texts.append({"type": "text", "text": {"content": text[pos]}})
         pos += 1
 
-    return rich_texts or [{"type": "text", "text": {"content": text}}]
+    return rich_texts or [{"type": "text", "text": {"content": text[:2000]}}]
 
 
 # ─────────────────────────────────────────────
@@ -254,10 +256,12 @@ _CALLOUT_PATTERN = re.compile(
 )
 
 
-def markdown_to_notion_blocks(markdown: str) -> list:
+def markdown_to_notion_blocks(markdown: str, _nested: bool = False) -> list:
     """将完整 Markdown 文本（含扩展语法）逐行解析为 Notion block 列表。
 
     多行块（代码、公式、toggle）通过状态机处理，其余逐行转换。
+    _nested=True 时，<toggle>## heading 降级为普通 toggle block，
+    因为 Notion 不允许带 children 的 heading 出现在嵌套 children 中。
     """
     blocks = []
     lines = markdown.split("\n")
@@ -330,14 +334,20 @@ def markdown_to_notion_blocks(markdown: str) -> list:
                     if depth == 0:
                         i += 1
                         break
+                # 安全兜底：depth=1 时遇到顶层 H1 标题，说明 </toggle> 被截断了
+                # 不消耗这一行，让外层循环处理它（避免整节内容被吞入 toggle）
+                elif depth == 1 and re.match(r'^# [^#]', curr):
+                    break
                 child_lines.append(lines[i])
                 i += 1
-            # 递归转换子块
-            child_blocks = markdown_to_notion_blocks("\n".join(child_lines))
-            if heading_level > 0:
+            # 递归转换子块（标记为嵌套，禁止内层使用 toggleable heading）
+            child_blocks = markdown_to_notion_blocks("\n".join(child_lines), _nested=True)
+            if heading_level > 0 and not _nested:
                 blocks.append(_heading(heading_level, heading_title, is_toggleable=True, children=child_blocks))
             else:
-                blocks.append(_toggle(title, child_blocks))
+                # 嵌套时降级为普通 toggle，避免 Notion 不允许嵌套 heading children
+                display_title = ("## " if heading_level == 2 else "### " if heading_level == 3 else "# ") + heading_title if heading_level > 0 else title
+                blocks.append(_toggle(display_title, child_blocks))
             continue
 
         # ── Callout 块 > [!TYPE] 文字 ─────────────────────────────
@@ -417,20 +427,52 @@ def _create_page(title: str, parent_page_id: str) -> str:
 
 
 def _append_blocks(page_id: str, blocks: list):
-    """将 blocks 分批（≤100 个/批）追加到页面。
+    """将 blocks 追加到页面，自动处理 Notion API 的嵌套深度限制。
 
-    注意：包含 children 的 toggle 块会整体发送，其子块不计入批次限制。
+    Notion 单次请求最多支持 2 层 children 嵌套，超过即报 400。
+    本函数采用逐层追加策略：先发送当前层（不含 children），
+    取得 Notion 返回的 block ID 后，再递归追加各 block 的 children。
+    每次请求永远只有一层，彻底绕开深度限制。
     """
-    for i in range(0, len(blocks), 100):
-        batch = blocks[i: i + 100]
+    if not blocks:
+        return
+
+    # 剥离 children，记录待递归追加的子块
+    flat_blocks = []
+    deferred: dict = {}
+
+    for idx, block in enumerate(blocks):
+        btype = block.get("type", "")
+        bcontent = dict(block.get(btype, {}))
+        children = bcontent.pop("children", None)
+        flat_blocks.append({**block, btype: bcontent})
+        if children:
+            deferred[idx] = children
+
+    # 分批发送，收集创建后的 block ID
+    all_created: list = []
+    for i in range(0, len(flat_blocks), 100):
+        batch = flat_blocks[i: i + 100]
         resp = requests.patch(
             f"{NOTION_API_BASE}/blocks/{page_id}/children",
             headers=_headers(),
             json={"children": batch},
         )
-        resp.raise_for_status()
-        if i + 100 < len(blocks):
-            time.sleep(0.3)  # 避免触发 Notion API 速率限制
+        if not resp.ok:
+            raise requests.HTTPError(
+                f"{resp.status_code} {resp.reason} — {resp.text}",
+                response=resp,
+            )
+        all_created.extend(resp.json().get("results", []))
+        if i + 100 < len(flat_blocks):
+            time.sleep(0.3)
+
+    # 递归追加各 block 的 children
+    for idx, children in deferred.items():
+        if idx < len(all_created):
+            child_parent_id = all_created[idx]["id"]
+            time.sleep(0.5)
+            _append_blocks(child_parent_id, children)
 
 
 # ─────────────────────────────────────────────
